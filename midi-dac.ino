@@ -31,12 +31,19 @@ U8G2_SSD1306_128X64_NONAME_1_4W_SW_SPI u8g2(U8G2_R0, 13, 11, 12, 2, 10);
 SoftwareSerial mySerial(17, 5);
 MIDI_CREATE_INSTANCE(SoftwareSerial, mySerial, MIDI);
 
+byte current_note = 0;
+
+int pitch_to_dac_value(byte pitch) {
+    // Assumes the 3V3 output of the DAC is pumped through an opamp with gain =3
+    // for 0-9V9 range
+    return (((float) pitch / (float) (12*9)) * (9.0f/9.9f)) * 4096.0f;
+}
+
 void noteOnCallback(byte channel, byte pitch, byte velocity) {
 
-    // At the moment, only interpret 3 octaves, rest is garbage
-    // (so that we can use the 0-3V3 range, don't need an opamp)
-    int target_pitch = pitch - 64;
-    int value = (((float) target_pitch / (float) 36) * (3.0f/3.3f)) * 4096.0f;
+    current_note = pitch;
+    int value = pitch_to_dac_value(pitch);
+
     dac.setVoltage(value, false);
 
     // Show note values on the display
@@ -55,11 +62,33 @@ void noteOnCallback(byte channel, byte pitch, byte velocity) {
     } while (u8g2.nextPage());
 }
 
+void noteOffCallback(byte channel, byte note, byte velocity) {
+    if(note == current_note) {
+        current_note = 0;
+        dac.setVoltage(0, false); // Ideally '0' is so low in frequency
+                                  // that there is no audible sound
+    }
+}
+
+void pitchBendCallback(byte channel, int bend) {
+    // We'll only handle pitch bend if a note is actually playing
+    if(current_note) {
+        // Pitch bend => 0 to 16384
+        // Usually means major second down to major second up
+        // = 1/6 of a volt down to 1/6 of a volt up
+        float volts_bend = ((float)bend) / (8192.0f * 6);
+        int dac_bend = volts_bend * (1.0f/9.9f) * 4096.0f;
+        dac.setVoltage(pitch_to_dac_value(current_note) + dac_bend, false);
+    }
+}
+
 void setup(void) {
     u8g2.begin();
 
     MIDI.begin();
     MIDI.setHandleNoteOn(noteOnCallback);
+    MIDI.setHandleNoteOff(noteOffCallback);
+    MIDI.setHandlePitchBend(pitchBendCallback);
 
     // Noname eBay breakout has this I2C address (after trial & error)
     dac.begin(0x62);
